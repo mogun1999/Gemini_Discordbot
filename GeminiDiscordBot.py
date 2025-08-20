@@ -67,7 +67,8 @@ async def on_message(message):
     #Start the coroutine
     asyncio.create_task(process_message(message))
 
-#----This is now a coroutine for longer messages so it won't block the on_message thread
+
+# ---This is a coroutine for longer messages so it won't block the on_message thread
 async def process_message(message):
     # Ignore messages sent by the bot or if mention everyone is used
     if message.author == bot.user or message.mention_everyone:
@@ -75,16 +76,20 @@ async def process_message(message):
 
     # Check if the bot is mentioned or the message is a DM
     if bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
+
+        # We need the author's name for proper history formatting
+        author_name = message.author.display_name
+
         # Start Typing to seem like something happened
-        cleaned_text = clean_discord_message(message.content)
         async with message.channel.typing():
             # Check for image attachments
             if message.attachments:
                 # Currently no chat history for images
                 for attachment in message.attachments:
-                    print(f"New Image Message FROM: {message.author.name} : {cleaned_text}")
+                    print(f"New Image Message FROM:  {author_name} : {clean_discord_message(message.content)}")
                     # these are the only image extensions it currently accepts
-                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                    if any(attachment.filename.lower().endswith(ext) for ext in
+                           ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
                         print("Processing Image")
                         await message.add_reaction('🎨')
                         async with aiohttp.ClientSession() as session:
@@ -93,48 +98,58 @@ async def process_message(message):
                                     await message.channel.send('Unable to download the image.')
                                     return
                                 image_data = await resp.read()
-                                response_text = await generate_response_with_image_and_text(image_data, cleaned_text)
+                                response_text = await generate_response_with_image_and_text(image_data,
+                                                                                            clean_discord_message(
+                                                                                                message.content))
                                 await split_and_send_messages(message, response_text, 1700)
                                 return
                     else:
-                        print(f"New Text Message FROM: {message.author.name} : {cleaned_text}")
-                        await ProcessAttachments(message, cleaned_text)
+                        print(f"New Text Message FROM: {author_name} : {clean_discord_message(message.content)}")
+                        await ProcessAttachments(message, clean_discord_message(message.content))
                         return
             # Not an Image, check for text responses
             else:
-                print(f"New Message Message FROM: {message.author.name} : {cleaned_text}")
+                print(f"New Message FROM: {author_name} : {clean_discord_message(message.content)}")
                 # Check for Reset or Clean keyword
-                if "RESET" in cleaned_text or "CLEAN" in cleaned_text:
+                if "RESET" in message.content or "CLEAN" in message.content:
                     # End back message
-                    if message.author.id in message_history:
-                        del message_history[message.author.id]
-                    await message.channel.send("🧼 History Reset for user: " + str(message.author.name))
+                    if message.channel.id in message_history:
+                        del message_history[message.channel.id]
+                    await message.channel.send("🧼 History Reset for user: " + str(message.channel.name))
                     return
                 # Check for URLs
-                if extract_url(cleaned_text) is not None:
-                    await message.add_reaction('🔗')
-                    print(f"Got URL: {extract_url(cleaned_text)}")
-                    response_text = await ProcessURL(cleaned_text)
+                if extract_url(message.content) is not None:
+                    # await message.add_reaction('🔗')
+                    print(f"Got URL: {extract_url(message.content)}")
+                    response_text = await ProcessURL(message.content)
                     await split_and_send_messages(message, response_text, 1700)
                     return
                 # Check if history is disabled, just send response
-                await message.add_reaction('💬')
+                # await message.add_reaction('💬')
                 if MAX_HISTORY == 0:
-                    response_text = await generate_response_with_text(cleaned_text)
+                    response_text = await generate_response_with_text(clean_discord_message(message.content))
                     # Add AI response to history
                     await split_and_send_messages(message, response_text, 1700)
                     return
-                # Add user's question to history
-                update_message_history(message.author.id, cleaned_text)
-                response_text = await generate_response_with_text(get_formatted_message_history(message.author.id))
-                # Add AI response to history
-                update_message_history(message.author.id, response_text)
-                # Split the Message so discord does not get upset
-                await split_and_send_messages(message, response_text, 1700)
+
+                # --- The Fix Is Right Here ---
+                # 1. Add the user's question to history with their name
+                update_message_history(message.channel.id, f"{author_name}: {clean_discord_message(message.content)}")
+
+                # 2. Get the full formatted history to send to Gemini
+                full_history = get_formatted_message_history(message.channel.id)
+
+                # 3. Generate the response (this gives us the clean text)
+                raw_response_text = await generate_response_with_text(full_history)
+
+                # 4. Add the AI's response to the history with a "Bot" prefix
+                update_message_history(message.channel.id, f"Bot: {raw_response_text}")
+
+                # 5. Send the clean, raw response to Discord
+                await split_and_send_messages(message, raw_response_text, 1700)
 
 
-       
-#---------------------------------------------AI Generation History-------------------------------------------------           
+#---------------------------------------------AI Generation History-------------------------------------------------
 
 async def generate_response_with_text(message_text):
     try:
@@ -158,27 +173,27 @@ async def generate_response_with_image_and_text(image_data, text):
         return "❌ Exception: " + str(e)
             
 #---------------------------------------------Message History-------------------------------------------------
-def update_message_history(user_id, text):
-    # Check if user_id already exists in the dictionary
-    if user_id in message_history:
-        # Append the new message to the user's message list
-        message_history[user_id].append(text)
-        # If there are more than 12 messages, remove the oldest one
-        if len(message_history[user_id]) > MAX_HISTORY:
-            message_history[user_id].pop(0)
+def update_message_history(channer_id, text):
+    # Check if channer_id already exists in the dictionary
+    if channer_id in message_history:
+        # Append the new message to the channer's message list
+        message_history[channer_id].append(text)
+        # If there are more than 150 messages, remove the oldest one
+        if len(message_history[channer_id]) > MAX_HISTORY:
+            message_history[channer_id].pop(0)
     else:
-        # If the user_id does not exist, create a new entry with the message
-        message_history[user_id] = [text]
+        # If the channer_id does not exist, create a new entry with the message
+        message_history[channer_id] = [text]
         
-def get_formatted_message_history(user_id):
+def get_formatted_message_history(channer_id):
     """
-    Function to return the message history for a given user_id with two line breaks between each message.
+    Function to return the message history for a given channer_id with two line breaks between each message.
     """
-    if user_id in message_history:
+    if channer_id in message_history:
         # Join the messages with two line breaks
-        return '\n\n'.join(message_history[user_id])
+        return '\n\n'.join(message_history[channer_id])
     else:
-        return "No messages found for this user."
+        return "No messages found for this channer_id."
     
 #---------------------------------------------Sending Messages-------------------------------------------------
 async def split_and_send_messages(message_system, text, max_length):
